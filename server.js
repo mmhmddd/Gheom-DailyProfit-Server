@@ -18,8 +18,8 @@ const app = express();
 app.use(helmet());
 app.use(cors({
   origin: [
-    'https://your-frontend.onrender.com',
-    'http://localhost:4200'
+    'http://localhost:4200',  // للتطوير
+    'https://gheom-daily-profit-frontend.vercel.app', // لاحقًا
   ],
   credentials: true
 }));
