@@ -3,12 +3,11 @@ import Report from "../models/report.model.js";
 import BranchTotal from "../models/branchTotal.model.js";
 import Branch from "../models/branch.model.js";
 import mongoose from "mongoose";
-import { recalcBranchTotal, resetBranchTotal } from "../utils/branchTotal.utils.js";
+import { recalcBranchTotal } from "../utils/branchTotal.utils.js";
 import { v2 as cloudinary } from "cloudinary";
 import { CloudinaryStorage } from "multer-storage-cloudinary";
 import multer from "multer";
 import jwt from "jsonwebtoken";
-
 
 // ---------- Cloudinary & Multer ----------
 cloudinary.config({
@@ -47,32 +46,20 @@ const calculateTotalCash = (req, res, next) => {
   next();
 };
 
-// ---------- HELPER: Convert branch ID to name ----------
-const resolveBranchName = async (branchInput) => {
-  if (!branchInput) return null;
-  if (mongoose.Types.ObjectId.isValid(branchInput)) {
-    const branch = await Branch.findById(branchInput).select("name");
-    return branch ? branch.name : null;
-  }
-  return branchInput;
-};
+// ---------- الفرع الوحيد: "branche 1" ----------
+const DEFAULT_BRANCH_NAME = "branche 1";
 
-// ---------- CREATE REPORT ----------
+// ---------- CREATE REPORT (بدون أي تحقق من branchName) ----------
 export const submitReport = [
   upload.single("balanceImage"),
   calculateTotalCash,
   async (req, res) => {
     try {
-      const { branchName: inputBranch, cash, network, deliveryApps, expenses } = req.body;
+      const { cash, network, deliveryApps, expenses } = req.body;
       const submittedBy = req.user.id;
 
       if (!req.file) {
         return res.status(400).json({ message: "Balance image is required" });
-      }
-
-      const branchName = await resolveBranchName(inputBranch);
-      if (!branchName) {
-        return res.status(400).json({ message: "Invalid or missing branch" });
       }
 
       const imageUrl = req.file.path;
@@ -83,9 +70,9 @@ export const submitReport = [
         (parseFloat(deliveryApps?.marsol) || 0);
 
       const report = new Report({
-        branchName,
-        cash: parseFloat(cash),
-        network: parseFloat(network),
+        branchName: DEFAULT_BRANCH_NAME, // دائمًا "branche 1"
+        cash: parseFloat(cash) || 0,
+        network: parseFloat(network) || 0,
         deliveryApps: {
           hangry: parseFloat(deliveryApps?.hangry) || 0,
           marsol: parseFloat(deliveryApps?.marsol) || 0,
@@ -93,17 +80,17 @@ export const submitReport = [
         },
         expenses: {
           amount: parseFloat(expenses?.amount) || 0,
-          description: expenses?.description || "",
+          description: expenses?.description?.trim() || "",
         },
         balanceImage: imageUrl,
         balanceImageId: imagePublicId,
         totalCashCurrent: parseFloat(cash) - parseFloat(expenses?.amount || 0),
         submittedBy,
-        branchAdmin: req.user.allowedBranches[0] || branchName,
+        branchAdmin: DEFAULT_BRANCH_NAME,
       });
 
       await report.save();
-      await recalcBranchTotal(branchName);
+      await recalcBranchTotal(DEFAULT_BRANCH_NAME);
 
       res.status(201).json({
         message: "Report submitted successfully",
@@ -147,25 +134,10 @@ export const getAllReports = async (req, res) => {
   }
 };
 
-// ---------- GET MY BRANCH REPORTS (branchAdmin & cashier) ----------
+// ---------- GET MY BRANCH REPORTS ----------
 export const getMyBranchReports = async (req, res) => {
   try {
-    const user = req.user;
-    if (!['branchAdmin', 'cashier'].includes(user.role)) {
-      return res.status(403).json({ message: "Access denied." });
-    }
-
-    if (!user.allowedBranches?.length) {
-      return res.status(400).json({ message: "No branch assigned" });
-    }
-
-    const branchId = user.allowedBranches[0];
-    const branch = await Branch.findById(branchId).select("name");
-    if (!branch) {
-      return res.status(400).json({ message: "Branch not found" });
-    }
-
-    const reports = await Report.find({ branchName: branch.name })
+    const reports = await Report.find({ branchName: DEFAULT_BRANCH_NAME })
       .populate("submittedBy", "name")
       .sort({ createdAt: -1 })
       .select("-__v");
@@ -191,7 +163,7 @@ export const getReportById = async (req, res) => {
   }
 };
 
-// ---------- EDIT REPORT ----------
+// ---------- EDIT REPORT (لا يمكن تغيير الفرع) ----------
 export const editReport = [
   upload.single("balanceImage"),
   calculateTotalCash,
@@ -208,18 +180,10 @@ export const editReport = [
         return res.status(403).json({ message: "غير مسموح لك بتعديل هذا التقرير" });
       }
 
-      let branchName = report.branchName;
-      if (updates.branchName) {
-        const newBranchName = await resolveBranchName(updates.branchName);
-        if (!newBranchName) return res.status(400).json({ message: "Invalid branch" });
-        branchName = newBranchName;
-        report.branchName = branchName;
-      }
-
-      if (updates.cash) report.cash = parseFloat(updates.cash);
-      if (updates.network) report.network = parseFloat(updates.network);
-      if (updates.expenses?.amount !== undefined) report.expenses.amount = parseFloat(updates.expenses.amount);
-      if (updates.expenses?.description !== undefined) report.expenses.description = updates.expenses.description;
+      if (updates.cash) report.cash = parseFloat(updates.cash) || 0;
+      if (updates.network) report.network = parseFloat(updates.network) || 0;
+      if (updates.expenses?.amount !== undefined) report.expenses.amount = parseFloat(updates.expenses.amount) || 0;
+      if (updates.expenses?.description !== undefined) report.expenses.description = updates.expenses.description?.trim() || "";
 
       if (updates.deliveryApps) {
         const hangry = parseFloat(updates.deliveryApps.hangry) || 0;
@@ -237,7 +201,7 @@ export const editReport = [
 
       report.totalCashCurrent = report.cash - report.expenses.amount;
       await report.save();
-      await recalcBranchTotal(branchName);
+      await recalcBranchTotal(DEFAULT_BRANCH_NAME);
 
       res.json({ message: "تم تعديل التقرير بنجاح", report });
     } catch (error) {
@@ -261,9 +225,8 @@ export const deleteReport = async (req, res) => {
     }
 
     if (report.balanceImageId) await cloudinary.uploader.destroy(report.balanceImageId);
-    const branchName = report.branchName;
     await Report.findByIdAndDelete(reportId);
-    await recalcBranchTotal(branchName);
+    await recalcBranchTotal(DEFAULT_BRANCH_NAME);
 
     res.json({ message: "تم حذف التقرير بنجاح" });
   } catch (error) {
@@ -275,33 +238,15 @@ export const deleteReport = async (req, res) => {
 // ---------- GET CUMULATIVE TOTALS ----------
 export const getBranchTotals = async (req, res) => {
   try {
-    const user = req.user;
-    let branchNames = [];
+    const totals = await BranchTotal.findOne({ branchName: DEFAULT_BRANCH_NAME })
+      .select("branchName cumulativeTotal lastResetAt");
 
-    if (user.role === "mainAdmin") {
-      const allBranches = await Branch.find().select("name");
-      branchNames = allBranches.map(b => b.name);
-    } else if (user.role === "branchAdmin" || user.role === "admin") {
-      if (!user.allowedBranches?.length) return res.status(200).json({ branches: [], grandTotal: null });
-      const myBranchId = user.allowedBranches[0];
-      const myBranch = await Branch.findById(myBranchId).select("name");
-      if (!myBranch) return res.status(200).json({ branches: [], grandTotal: null });
-      branchNames = [myBranch.name];
-    } else {
-      return res.status(403).json({ message: "Access denied" });
-    }
-
-    const totals = await BranchTotal.find({ branchName: { $in: branchNames } }).select("branchName cumulativeTotal lastResetAt");
-    const result = branchNames.map(name => {
-      const found = totals.find(t => t.branchName === name);
-      return found || { branchName: name, cumulativeTotal: 0, lastResetAt: null };
-    });
-
-    const grandTotal = result.reduce((sum, t) => sum + t.cumulativeTotal, 0);
+    const result = totals || { branchName: DEFAULT_BRANCH_NAME, cumulativeTotal: 0, lastResetAt: null };
+    const grandTotal = result.cumulativeTotal;
 
     res.json({
-      branches: result,
-      grandTotal: user.role === "mainAdmin" ? grandTotal : null,
+      branches: [result],
+      grandTotal: req.user.role === "mainAdmin" ? grandTotal : null,
     });
   } catch (error) {
     console.error("Get Branch Totals Error:", error);
@@ -312,26 +257,10 @@ export const getBranchTotals = async (req, res) => {
 // ---------- RESET CUMULATIVE ----------
 export const resetCumulative = async (req, res) => {
   try {
-    const user = req.user;
-    let { branchName: inputBranch } = req.body;
-    let branchName = null;
-
-    if (inputBranch) {
-      branchName = await resolveBranchName(inputBranch);
-      if (!branchName) return res.status(400).json({ message: "Invalid branch" });
-    }
-
-    if (user.role === "mainAdmin") {
-      // يمكنه إعادة تعيين أي فرع
-    } else if (user.role === "branchAdmin" || user.role === "admin") {
-      if (!branchName) return res.status(403).json({ message: "branchName required" });
-      const allowedNames = (await Branch.find({ _id: { $in: user.allowedBranches } })).map(b => b.name);
-      if (!allowedNames.includes(branchName)) return res.status(403).json({ message: "غير مسموح لك" });
-    } else {
+    if (req.user.role !== "mainAdmin") {
       return res.status(403).json({ message: "Access denied" });
     }
-
-    await resetBranchTotal(branchName || null);
+    await resetBranchTotal(DEFAULT_BRANCH_NAME);
     res.json({ message: "تم إعادة تعيين الإجمالي بنجاح" });
   } catch (error) {
     console.error("Reset Cumulative Error:", error);
@@ -343,68 +272,31 @@ export const resetCumulative = async (req, res) => {
 export const rebuildAllTotals = async (req, res) => {
   try {
     if (req.user.role !== "mainAdmin") return res.status(403).json({ message: "mainAdmin only" });
-    const branches = await Branch.find().select("name");
-    for (const { name } of branches) await recalcBranchTotal(name);
-    res.json({ message: "All cumulative totals rebuilt successfully" });
+    await recalcBranchTotal(DEFAULT_BRANCH_NAME);
+    res.json({ message: "Cumulative total rebuilt successfully" });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };
 
-// =============================================================================
-// NEW: GET MY BRANCH SUMMARY (ALL DETAILS + DAILY + MONTH + CUMULATIVE)
-// =============================================================================
+// ---------- GET MY BRANCH SUMMARY ----------
 export const getMyBranchSummary = async (req, res) => {
   try {
-    const user = req.user;
-
-    // 1. Permission Check
-    if (!["branchAdmin", "cashier"].includes(user.role)) {
-      return res.status(403).json({ message: "Access denied." });
-    }
-    if (!user.allowedBranches?.length) {
-      return res.status(400).json({ message: "No branch assigned." });
-    }
-
-    const branchId = user.allowedBranches[0];
-    const branch = await Branch.findById(branchId).select("name");
-    if (!branch) return res.status(400).json({ message: "Branch not found." });
-    const branchName = branch.name;
-
-    // 2. Fetch all reports for this branch
-    const reports = await Report.find({ branchName })
+    const reports = await Report.find({ branchName: DEFAULT_BRANCH_NAME })
       .populate("submittedBy", "name")
       .sort({ createdAt: -1 })
       .select("-__v -balanceImageId")
       .lean();
 
-    // 3. Date boundaries (native Date)
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    // 4. Calculate Daily Totals
-    const daily = {
-      cash: 0,
-      network: 0,
-      deliveryApps: { hangry: 0, marsol: 0, total: 0 },
-      expenses: 0,
-      totalCashCurrent: 0,
-    };
-
-    // 5. Calculate Monthly Totals
-    const month = {
-      cash: 0,
-      network: 0,
-      deliveryApps: { hangry: 0, marsol: 0, total: 0 },
-      expenses: 0,
-      totalCashCurrent: 0,
-    };
+    const daily = { cash: 0, network: 0, deliveryApps: { hangry: 0, marsol: 0, total: 0 }, expenses: 0, totalCashCurrent: 0 };
+    const month = { cash: 0, network: 0, deliveryApps: { hangry: 0, marsol: 0, total: 0 }, expenses: 0, totalCashCurrent: 0 };
 
     reports.forEach(r => {
       const createdAt = new Date(r.createdAt);
-
-      // Daily
       if (createdAt >= todayStart) {
         daily.cash += r.cash;
         daily.network += r.network;
@@ -414,8 +306,6 @@ export const getMyBranchSummary = async (req, res) => {
         daily.expenses += r.expenses.amount;
         daily.totalCashCurrent += r.totalCashCurrent;
       }
-
-      // Monthly
       if (createdAt >= monthStart) {
         month.cash += r.cash;
         month.network += r.network;
@@ -427,14 +317,13 @@ export const getMyBranchSummary = async (req, res) => {
       }
     });
 
-    // 6. Cumulative from BranchTotal
-    const cumulativeDoc = await BranchTotal.findOne({ branchName }).select("cumulativeTotal lastResetAt").lean();
+    const cumulativeDoc = await BranchTotal.findOne({ branchName: DEFAULT_BRANCH_NAME })
+      .select("cumulativeTotal lastResetAt").lean();
     const cumulative = cumulativeDoc?.cumulativeTotal ?? 0;
     const lastResetAt = cumulativeDoc?.lastResetAt ?? null;
 
-    // 7. Final Response
     res.json({
-      branch: branchName,
+      branch: DEFAULT_BRANCH_NAME,
       reports,
       daily,
       month,
@@ -444,6 +333,15 @@ export const getMyBranchSummary = async (req, res) => {
     });
   } catch (error) {
     console.error("Get My Branch Summary Error:", error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// ---------- GET ALL BRANCHES (ثابت: فرع واحد فقط) ----------
+export const getAllBranches = async (req, res) => {
+  try {
+    res.json({ branches: [DEFAULT_BRANCH_NAME] });
+  } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };

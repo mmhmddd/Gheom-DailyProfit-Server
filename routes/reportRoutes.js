@@ -12,33 +12,28 @@ import {
   getBranchTotals,
   resetCumulative,
   rebuildAllTotals,
-  getMyBranchSummary // ✅ add this line
+  getMyBranchSummary,
+  getAllBranches
 } from "../controllers/report.controller.js";
-
 
 const router = express.Router();
 
-// Public
 router.post("/admin/verify-password", verifyAdminPassword);
+router.use(verifyToken);
 
-// Protected Routes (يتطلب تسجيل دخول)
-router.use(verifyToken); // <-- استخدم verifyToken هنا
-
-// Submit / Edit / Delete
 router.post("/", submitReport);
 router.put("/:id", editReport);
 router.delete("/:id", deleteReport);
 
-// Reports
-router.get("/admin/reports", getAllReports);         
-router.get("/my/reports", getMyBranchReports);        
-router.get("/admin/reports/:id", getReportById);    
-router.get("/my/branch-summary", getMyBranchSummary);  
-// Totals
+router.get("/admin/reports", getAllReports);
+router.get("/my/reports", getMyBranchReports);
+router.get("/admin/reports/:id", getReportById);
+router.get("/my/branch-summary", getMyBranchSummary);
+
+router.get("/branches", getAllBranches); // دائمًا يرجع ["branche 1"]
+
 router.get("/totals", getBranchTotals);
 router.post("/totals/reset", resetCumulative);
-
-// [TEMP] Rebuild
 router.post("/rebuild-totals", rebuildAllTotals);
 
 export default router;
