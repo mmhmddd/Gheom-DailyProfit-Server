@@ -3,7 +3,7 @@ import BranchTotal from '../models/branchTotal.model.js';
 import Report from '../models/report.model.js';
 
 /**
- * Recalculate cumulative total for a branch from scratch.
+ * إعادة حساب الإجمالي من التقارير الجديدة فقط (بعد lastResetAt)
  */
 export const recalcBranchTotal = async (branchName) => {
   if (!branchName || typeof branchName !== 'string') {
@@ -11,37 +11,52 @@ export const recalcBranchTotal = async (branchName) => {
     return 0;
   }
 
-  const reports = await Report.find({ branchName })
-    .select('cash network expenses.amount')
-    .lean();
+  // جلب الـ BranchTotal لمعرفة lastResetAt
+  const branchTotal = await BranchTotal.findOne({ branchName }).lean();
+  const lastResetAt = branchTotal?.lastResetAt || new Date(0); 
+
+  const reports = await Report.find({
+    branchName,
+    createdAt: { $gte: lastResetAt }
+  }).select('cash network deliveryApps expenses.amount').lean();
 
   const total = reports.reduce((sum, r) => {
-    return sum + r.cash + r.network - (r.expenses?.amount || 0);
+    const delivery = (r.deliveryApps?.hangry || 0) + (r.deliveryApps?.marsol || 0);
+    return sum + (r.cash || 0) + (r.network || 0) + delivery;
   }, 0);
 
+  // تحديث الإجمالي + الاحتفاظ بـ lastResetAt
   await BranchTotal.findOneAndUpdate(
     { branchName },
-    { cumulativeTotal: total, lastResetAt: null },
+    { 
+      cumulativeTotal: total,
+      lastResetAt: branchTotal?.lastResetAt || null // لا تغيّر lastResetAt
+    },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
 
+  console.log(`[RECALC] ${branchName} = ${total} (منذ ${lastResetAt.toISOString()})`);
   return total;
 };
 
 /**
- * Reset cumulative total for a branch (or all).
+ * إعادة تعيين الإجمالي إلى 0 + تحديد lastResetAt
  */
 export const resetBranchTotal = async (branchName = null) => {
+  const now = new Date();
+
   if (branchName) {
     await BranchTotal.findOneAndUpdate(
       { branchName },
-      { cumulativeTotal: 0, lastResetAt: new Date() },
+      { cumulativeTotal: 0, lastResetAt: now },
       { upsert: true }
     );
+    console.log(`[RESET] ${branchName} → 0 at ${now}`);
   } else {
     await BranchTotal.updateMany(
       {},
-      { cumulativeTotal: 0, lastResetAt: new Date() }
+      { cumulativeTotal: 0, lastResetAt: now }
     );
+    console.log(`[RESET] All branches → 0 at ${now}`);
   }
 };

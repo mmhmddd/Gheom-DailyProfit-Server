@@ -3,7 +3,9 @@ import Report from "../models/report.model.js";
 import BranchTotal from "../models/branchTotal.model.js";
 import Branch from "../models/branch.model.js";
 import mongoose from "mongoose";
-import { recalcBranchTotal } from "../utils/branchTotal.utils.js";
+
+import { recalcBranchTotal, resetBranchTotal } from "../utils/branchTotal.utils.js";
+
 import { v2 as cloudinary } from "cloudinary";
 import { CloudinaryStorage } from "multer-storage-cloudinary";
 import multer from "multer";
@@ -46,10 +48,10 @@ const calculateTotalCash = (req, res, next) => {
   next();
 };
 
-// ---------- الفرع الوحيد: "branche 1" ----------
+// ---------- الفرع الوحيد ----------
 const DEFAULT_BRANCH_NAME = "branche 1";
 
-// ---------- CREATE REPORT (بدون أي تحقق من branchName) ----------
+// ---------- CREATE REPORT ----------
 export const submitReport = [
   upload.single("balanceImage"),
   calculateTotalCash,
@@ -70,7 +72,7 @@ export const submitReport = [
         (parseFloat(deliveryApps?.marsol) || 0);
 
       const report = new Report({
-        branchName: DEFAULT_BRANCH_NAME, // دائمًا "branche 1"
+        branchName: DEFAULT_BRANCH_NAME,
         cash: parseFloat(cash) || 0,
         network: parseFloat(network) || 0,
         deliveryApps: {
@@ -163,7 +165,7 @@ export const getReportById = async (req, res) => {
   }
 };
 
-// ---------- EDIT REPORT (لا يمكن تغيير الفرع) ----------
+// ---------- EDIT REPORT ----------
 export const editReport = [
   upload.single("balanceImage"),
   calculateTotalCash,
@@ -235,17 +237,33 @@ export const deleteReport = async (req, res) => {
   }
 };
 
-// ---------- GET CUMULATIVE TOTALS ----------
+// ---------- GET CUMULATIVE TOTALS (FIXED) ----------
 export const getBranchTotals = async (req, res) => {
   try {
-    const totals = await BranchTotal.findOne({ branchName: DEFAULT_BRANCH_NAME })
-      .select("branchName cumulativeTotal lastResetAt");
+    // جلب جميع الفروع (حتى لو واحد)
+    const branchNames = [DEFAULT_BRANCH_NAME]; // يمكن توسيعها لاحقًا
 
-    const result = totals || { branchName: DEFAULT_BRANCH_NAME, cumulativeTotal: 0, lastResetAt: null };
-    const grandTotal = result.cumulativeTotal;
+    const results = await Promise.all(
+      branchNames.map(async (branchName) => {
+        let totalDoc = await BranchTotal.findOne({ branchName }).lean();
+        if (!totalDoc) {
+          totalDoc = { branchName, cumulativeTotal: 0, lastResetAt: null };
+        }
+        // إعادة حساب الإجمالي دائمًا لضمان الدقة
+        await recalcBranchTotal(branchName);
+        const updated = await BranchTotal.findOne({ branchName }).lean();
+        return {
+          branchName: updated.branchName,
+          cumulativeTotal: updated.cumulativeTotal || 0,
+          lastResetAt: updated.lastResetAt || null,
+        };
+      })
+    );
+
+    const grandTotal = results.reduce((sum, b) => sum + b.cumulativeTotal, 0);
 
     res.json({
-      branches: [result],
+      branches: results,
       grandTotal: req.user.role === "mainAdmin" ? grandTotal : null,
     });
   } catch (error) {
@@ -257,18 +275,33 @@ export const getBranchTotals = async (req, res) => {
 // ---------- RESET CUMULATIVE ----------
 export const resetCumulative = async (req, res) => {
   try {
-    if (req.user.role !== "mainAdmin") {
-      return res.status(403).json({ message: "Access denied" });
+    const allowedRoles = ['mainAdmin', 'branchAdmin'];
+    if (!allowedRoles.includes(req.user.role)) {
+      return res.status(403).json({ message: 'Access denied' });
     }
-    await resetBranchTotal(DEFAULT_BRANCH_NAME);
-    res.json({ message: "تم إعادة تعيين الإجمالي بنجاح" });
+
+    const branchToReset =
+      req.user.role === 'mainAdmin'
+        ? req.body.branchName || DEFAULT_BRANCH_NAME
+        : DEFAULT_BRANCH_NAME;
+
+    await resetBranchTotal(branchToReset);
+    await recalcBranchTotal(branchToReset); // يعيد الحساب (يجب أن يكون 0)
+
+    const updated = await BranchTotal.findOne({ branchName: branchToReset }).lean();
+
+    res.json({
+      message: 'تم إعادة تعيين الإجمالي بنجاح',
+      cumulative: updated?.cumulativeTotal || 0,
+      lastResetAt: updated?.lastResetAt || new Date().toISOString(),
+    });
   } catch (error) {
-    console.error("Reset Cumulative Error:", error);
+    console.error('Reset Cumulative Error:', error);
     res.status(500).json({ message: error.message });
   }
 };
 
-// ---------- [TEMP] REBUILD ALL TOTALS ----------
+// ---------- REBUILD ALL TOTALS (TEMP) ----------
 export const rebuildAllTotals = async (req, res) => {
   try {
     if (req.user.role !== "mainAdmin") return res.status(403).json({ message: "mainAdmin only" });
@@ -317,8 +350,11 @@ export const getMyBranchSummary = async (req, res) => {
       }
     });
 
+    // إعادة حساب الإجمالي التراكمي من BranchTotal
+    await recalcBranchTotal(DEFAULT_BRANCH_NAME);
     const cumulativeDoc = await BranchTotal.findOne({ branchName: DEFAULT_BRANCH_NAME })
       .select("cumulativeTotal lastResetAt").lean();
+
     const cumulative = cumulativeDoc?.cumulativeTotal ?? 0;
     const lastResetAt = cumulativeDoc?.lastResetAt ?? null;
 
@@ -337,7 +373,7 @@ export const getMyBranchSummary = async (req, res) => {
   }
 };
 
-// ---------- GET ALL BRANCHES (ثابت: فرع واحد فقط) ----------
+// ---------- GET ALL BRANCHES ----------
 export const getAllBranches = async (req, res) => {
   try {
     res.json({ branches: [DEFAULT_BRANCH_NAME] });

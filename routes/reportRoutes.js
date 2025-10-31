@@ -1,4 +1,4 @@
-// src/routes/reportRoutes.js
+// src/routes/report.routes.js
 import express from "express";
 import { verifyToken } from "../middleware/auth.middleware.js";
 import {
@@ -18,22 +18,35 @@ import {
 
 const router = express.Router();
 
-router.post("/admin/verify-password", verifyAdminPassword);
+// Public
+router.post("/verify-admin", verifyAdminPassword);
+
+// Auth Required
 router.use(verifyToken);
 
-router.post("/", submitReport);
-router.put("/:id", editReport);
-router.delete("/:id", deleteReport);
+// === [1] STATIC ROUTES FIRST (يجب أن تكون قبل أي :id) ===
 
-router.get("/admin/reports", getAllReports);
-router.get("/my/reports", getMyBranchReports);
-router.get("/admin/reports/:id", getReportById);
-router.get("/my/branch-summary", getMyBranchSummary);
+// Reports
+router.post("/submit", submitReport);
 
-router.get("/branches", getAllBranches); // دائمًا يرجع ["branche 1"]
+// My Branch
+router.get("/my", getMyBranchReports);
+router.get("/my/summary", getMyBranchSummary);
 
+// Totals
 router.get("/totals", getBranchTotals);
 router.post("/totals/reset", resetCumulative);
-router.post("/rebuild-totals", rebuildAllTotals);
+router.post("/totals/rebuild", rebuildAllTotals);
+
+// Branches
+router.get("/branches", getAllBranches);
+
+// Admin-only
+router.get("/", getAllReports); // mainAdmin only
+
+// === [2] DYNAMIC ROUTES LAST (بعد كل الثابتة) ===
+router.get("/:id", getReportById);     // mainAdmin
+router.put("/:id", editReport);
+router.delete("/:id", deleteReport);
 
 export default router;
