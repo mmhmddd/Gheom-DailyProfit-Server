@@ -9,7 +9,6 @@ import authRoutes from './routes/authRoutes.js';
 import userRoutes from './routes/userRoutes.js';
 import branchRoutes from './routes/branchRoutes.js';
 import reportRoutes from './routes/reportRoutes.js';
-
 dotenv.config();
 
 const app = express();
@@ -39,7 +38,7 @@ connectDB();
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/branches', branchRoutes);
-app.use('/api', reportRoutes);
+app.use('/api/reports', reportRoutes);
 
 // 404 Handler (الحل الصحيح بدل *)
 // استبدل app.use('*', ...) بهذا:

@@ -9,11 +9,11 @@ const userSchema = new mongoose.Schema({
   password: { type: String, required: true },
   role: { 
     type: String, 
-    enum: ['user', 'admin', 'mainAdmin', 'viewAdmin', 'branchAdmin'], 
+    enum: ['user', 'admin', 'mainAdmin', 'viewAdmin', 'branchAdmin', 'cashier'], 
     default: 'user' 
   },
   allowedBranches: { type: [String], default: [] },
-  phone: { type: String },           // optional
+  phone: { type: String },
   status: { type: String, enum: ['active', 'inactive'], default: 'active' }
 }, { timestamps: true });
 

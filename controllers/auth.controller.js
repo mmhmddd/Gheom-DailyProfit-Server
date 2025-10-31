@@ -4,9 +4,7 @@ import jwt from "jsonwebtoken";
 import nodemailer from "nodemailer";
 import crypto from "crypto";
 
-/**
- * 🧩 REGISTER - Create user or admin
- */
+
 export const register = async (req, res) => {
   try {
     const { name, username, email, password, role, allowedBranches } = req.body;

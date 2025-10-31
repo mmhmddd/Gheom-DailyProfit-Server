@@ -1,4 +1,4 @@
-// models/report.model.js
+// src/models/report.model.js
 import mongoose from 'mongoose';
 
 const reportSchema = new mongoose.Schema({
@@ -21,12 +21,17 @@ const reportSchema = new mongoose.Schema({
     },
     default: { amount: 0, description: '' }
   },
-  balanceImage: { type: String, required: true },      // URL من Cloudinary
-  balanceImageId: { type: String, required: true },    // Public ID للحذف
+  balanceImage: { type: String, required: true },
+  balanceImageId: { type: String, required: true },
   totalCashCurrent: { type: Number, min: 0 },
   submittedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   branchAdmin: { type: String, required: true }
 }, { timestamps: true });
+
+// ---- NEW VIRTUAL (optional, for readability) ----
+reportSchema.virtual('dailyNet').get(function () {
+  return this.cash + this.network - this.expenses.amount;
+});
 
 const Report = mongoose.model('Report', reportSchema);
 export default Report;
