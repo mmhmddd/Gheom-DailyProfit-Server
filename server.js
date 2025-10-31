@@ -18,7 +18,8 @@ app.use(helmet());
 app.use(cors({
   origin: [
     'http://localhost:4200',  // للتطوير
-    'https://gheom-daily-profit.vercel.app', // لاحقًا
+    'https://gheom-daily-profit.vercel.app',
+    'https://shop.haraj.space'
   ],
   credentials: true
 }));
