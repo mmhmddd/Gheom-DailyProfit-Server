@@ -118,7 +118,6 @@ export const deleteBranch = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
-
 export const getMyBranches = async (req, res) => {
   try {
     const user = req.user;
@@ -126,9 +125,9 @@ export const getMyBranches = async (req, res) => {
     let branches;
     if (user.role === 'mainAdmin') {
       branches = await Branch.find({ status: 'active' }).sort({ name: 1 });
-    } else if (user.role === 'branchAdmin') {
+    } else if (user.role === 'branchAdmin' || user.role === 'cashier'|| user.role === 'branchAdmin') {
       if (!user.allowedBranches || user.allowedBranches.length === 0) {
-        return res.status(200).json([]); // لا فروع مسموحة
+        return res.status(200).json([]); // No branches assigned
       }
       branches = await Branch.find({
         _id: { $in: user.allowedBranches },
