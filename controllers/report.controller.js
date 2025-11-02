@@ -48,21 +48,38 @@ const calculateTotalCash = (req, res, next) => {
   next();
 };
 
-// ---------- الفرع الوحيد ----------
-const DEFAULT_BRANCH_NAME = "branche 1";
+// ---------- Helper: Get Branch Details by ID ----------
+const getBranchDetails = async (branchId) => {
+  if (!branchId || !mongoose.Types.ObjectId.isValid(branchId)) {
+    throw new Error("Invalid branch ID");
+  }
+  const branch = await Branch.findById(branchId).select("name code status");
+  if (!branch || branch.status !== "active") {
+    throw new Error("Branch not found or inactive");
+  }
+  return { name: branch.name, code: branch.code };
+};
 
-// ---------- CREATE REPORT ----------
+// ---------- CREATE REPORT (مُصلح: يستخدم branchId من req.body) ----------
 export const submitReport = [
   upload.single("balanceImage"),
   calculateTotalCash,
   async (req, res) => {
     try {
-      const { cash, network, deliveryApps, expenses } = req.body;
+      const { branchId, cash, network, deliveryApps, expenses } = req.body; // قراءة branchId
       const submittedBy = req.user.id;
 
       if (!req.file) {
         return res.status(400).json({ message: "Balance image is required" });
       }
+
+      if (!branchId) {
+        return res.status(400).json({ message: "Branch ID is required" });
+      }
+
+      // جلب تفاصيل الفرع من branchId (تغيير رئيسي)
+      const branchDetails = await getBranchDetails(branchId);
+      const branchName = branchDetails.name;
 
       const imageUrl = req.file.path;
       const imagePublicId = req.file.filename;
@@ -72,7 +89,7 @@ export const submitReport = [
         (parseFloat(deliveryApps?.marsol) || 0);
 
       const report = new Report({
-        branchName: DEFAULT_BRANCH_NAME,
+        branchName, // استخدم الفرع المختار
         cash: parseFloat(cash) || 0,
         network: parseFloat(network) || 0,
         deliveryApps: {
@@ -88,11 +105,11 @@ export const submitReport = [
         balanceImageId: imagePublicId,
         totalCashCurrent: parseFloat(cash) - parseFloat(expenses?.amount || 0),
         submittedBy,
-        branchAdmin: DEFAULT_BRANCH_NAME,
+        branchAdmin: branchName, // أو يمكن حفظ branchId كـ ref
       });
 
       await report.save();
-      await recalcBranchTotal(DEFAULT_BRANCH_NAME);
+      await recalcBranchTotal(branchName); // حساب للفرع المختار
 
       res.status(201).json({
         message: "Report submitted successfully",
@@ -106,7 +123,7 @@ export const submitReport = [
   },
 ];
 
-// ---------- ADMIN PASSWORD ----------
+// ---------- ADMIN PASSWORD (بدون تغيير) ----------
 export const verifyAdminPassword = async (req, res) => {
   try {
     const { password } = req.body;
@@ -120,7 +137,7 @@ export const verifyAdminPassword = async (req, res) => {
   }
 };
 
-// ---------- GET ALL REPORTS (mainAdmin) ----------
+// ---------- GET ALL REPORTS (mainAdmin: يجلب كل التقارير من كل الفروع) ----------
 export const getAllReports = async (req, res) => {
   try {
     if (req.user.role !== "mainAdmin") {
@@ -136,10 +153,12 @@ export const getAllReports = async (req, res) => {
   }
 };
 
-// ---------- GET MY BRANCH REPORTS ----------
+// ---------- GET MY BRANCH REPORTS (مُصلح: يستخدم branchName من user أو req) ----------
 export const getMyBranchReports = async (req, res) => {
   try {
-    const reports = await Report.find({ branchName: DEFAULT_BRANCH_NAME })
+    // لـ branchAdmin/cashier: استخدم الفرع المسموح (افتراضيًا من user.allowedBranches أو branchName)
+    const userBranchName = req.user.branchName || "branche 1"; // أضف branchName إلى user في auth middleware
+    const reports = await Report.find({ branchName: userBranchName })
       .populate("submittedBy", "name")
       .sort({ createdAt: -1 })
       .select("-__v");
@@ -151,7 +170,7 @@ export const getMyBranchReports = async (req, res) => {
   }
 };
 
-// ---------- GET ONE REPORT (mainAdmin) ----------
+// ---------- GET ONE REPORT (mainAdmin: بدون تغيير) ----------
 export const getReportById = async (req, res) => {
   try {
     if (req.user.role !== "mainAdmin") {
@@ -165,7 +184,7 @@ export const getReportById = async (req, res) => {
   }
 };
 
-// ---------- EDIT REPORT ----------
+// ---------- EDIT REPORT (مُصلح: يستخدم branchName من التقرير الأصلي) ----------
 export const editReport = [
   upload.single("balanceImage"),
   calculateTotalCash,
@@ -182,10 +201,21 @@ export const editReport = [
         return res.status(403).json({ message: "غير مسموح لك بتعديل هذا التقرير" });
       }
 
+      // إذا أرسل branchId جديد (للـ mainAdmin)
+      if (updates.branchId && user.role === "mainAdmin") {
+        const branchDetails = await getBranchDetails(updates.branchId);
+        report.branchName = branchDetails.name;
+      }
+
       if (updates.cash) report.cash = parseFloat(updates.cash) || 0;
       if (updates.network) report.network = parseFloat(updates.network) || 0;
-      if (updates.expenses?.amount !== undefined) report.expenses.amount = parseFloat(updates.expenses.amount) || 0;
-      if (updates.expenses?.description !== undefined) report.expenses.description = updates.expenses.description?.trim() || "";
+      
+      if (updates.expenses && updates.expenses.amount !== undefined) {
+        report.expenses.amount = parseFloat(updates.expenses.amount) || 0;
+      }
+      if (updates.expenses && updates.expenses.description !== undefined) {
+        report.expenses.description = updates.expenses.description?.trim() || "";
+      }
 
       if (updates.deliveryApps) {
         const hangry = parseFloat(updates.deliveryApps.hangry) || 0;
@@ -203,7 +233,7 @@ export const editReport = [
 
       report.totalCashCurrent = report.cash - report.expenses.amount;
       await report.save();
-      await recalcBranchTotal(DEFAULT_BRANCH_NAME);
+      await recalcBranchTotal(report.branchName); // للفرع الحالي
 
       res.json({ message: "تم تعديل التقرير بنجاح", report });
     } catch (error) {
@@ -213,7 +243,7 @@ export const editReport = [
   },
 ];
 
-// ---------- DELETE REPORT ----------
+// ---------- DELETE REPORT (مُصلح: يستخدم branchName من التقرير) ----------
 export const deleteReport = async (req, res) => {
   try {
     const reportId = req.params.id;
@@ -227,8 +257,9 @@ export const deleteReport = async (req, res) => {
     }
 
     if (report.balanceImageId) await cloudinary.uploader.destroy(report.balanceImageId);
+    const branchName = report.branchName; // الفرع الأصلي
     await Report.findByIdAndDelete(reportId);
-    await recalcBranchTotal(DEFAULT_BRANCH_NAME);
+    await recalcBranchTotal(branchName); // تحديث الفرع المحذوف منه
 
     res.json({ message: "تم حذف التقرير بنجاح" });
   } catch (error) {
@@ -237,11 +268,12 @@ export const deleteReport = async (req, res) => {
   }
 };
 
-// ---------- GET CUMULATIVE TOTALS (FIXED) ----------
+// ---------- GET CUMULATIVE TOTALS (مُصلح: يجلب كل الفروع الحقيقية) ----------
 export const getBranchTotals = async (req, res) => {
   try {
-    // جلب جميع الفروع (حتى لو واحد)
-    const branchNames = [DEFAULT_BRANCH_NAME]; // يمكن توسيعها لاحقًا
+    // جلب جميع الفروع النشطة من قاعدة البيانات (تغيير رئيسي)
+    const branches = await Branch.find({ status: "active" }).select("name").lean();
+    const branchNames = branches.map(b => b.name);
 
     const results = await Promise.all(
       branchNames.map(async (branchName) => {
@@ -249,13 +281,13 @@ export const getBranchTotals = async (req, res) => {
         if (!totalDoc) {
           totalDoc = { branchName, cumulativeTotal: 0, lastResetAt: null };
         }
-        // إعادة حساب الإجمالي دائمًا لضمان الدقة
         await recalcBranchTotal(branchName);
         const updated = await BranchTotal.findOne({ branchName }).lean();
         return {
           branchName: updated.branchName,
           cumulativeTotal: updated.cumulativeTotal || 0,
           lastResetAt: updated.lastResetAt || null,
+          lastReportDate: updated.lastReportDate || null, // إضافة للـ dashboard
         };
       })
     );
@@ -272,7 +304,7 @@ export const getBranchTotals = async (req, res) => {
   }
 };
 
-// ---------- RESET CUMULATIVE ----------
+// ---------- RESET CUMULATIVE (مُصلح: يدعم فرعًا محددًا) ----------
 export const resetCumulative = async (req, res) => {
   try {
     const allowedRoles = ['mainAdmin', 'branchAdmin'];
@@ -280,13 +312,17 @@ export const resetCumulative = async (req, res) => {
       return res.status(403).json({ message: 'Access denied' });
     }
 
-    const branchToReset =
-      req.user.role === 'mainAdmin'
-        ? req.body.branchName || DEFAULT_BRANCH_NAME
-        : DEFAULT_BRANCH_NAME;
+    let branchToReset;
+    if (req.user.role === 'mainAdmin') {
+      const { branchName } = req.body;
+      if (!branchName) return res.status(400).json({ message: "Branch name required for mainAdmin" });
+      branchToReset = branchName;
+    } else {
+      branchToReset = req.user.branchName || "branche 1"; // من user
+    }
 
     await resetBranchTotal(branchToReset);
-    await recalcBranchTotal(branchToReset); // يعيد الحساب (يجب أن يكون 0)
+    await recalcBranchTotal(branchToReset);
 
     const updated = await BranchTotal.findOne({ branchName: branchToReset }).lean();
 
@@ -301,21 +337,25 @@ export const resetCumulative = async (req, res) => {
   }
 };
 
-// ---------- REBUILD ALL TOTALS (TEMP) ----------
+// ---------- REBUILD ALL TOTALS (مُصلح: لكل الفروع) ----------
 export const rebuildAllTotals = async (req, res) => {
   try {
     if (req.user.role !== "mainAdmin") return res.status(403).json({ message: "mainAdmin only" });
-    await recalcBranchTotal(DEFAULT_BRANCH_NAME);
-    res.json({ message: "Cumulative total rebuilt successfully" });
+    
+    const branches = await Branch.find({ status: "active" }).select("name").lean();
+    await Promise.all(branches.map(b => recalcBranchTotal(b.name)));
+    
+    res.json({ message: "All cumulative totals rebuilt successfully" });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };
 
-// ---------- GET MY BRANCH SUMMARY ----------
+// ---------- GET MY BRANCH SUMMARY (مُصلح: لفرع المستخدم) ----------
 export const getMyBranchSummary = async (req, res) => {
   try {
-    const reports = await Report.find({ branchName: DEFAULT_BRANCH_NAME })
+    const userBranchName = req.user.branchName || "branche 1"; // من user
+    const reports = await Report.find({ branchName: userBranchName })
       .populate("submittedBy", "name")
       .sort({ createdAt: -1 })
       .select("-__v -balanceImageId")
@@ -350,16 +390,15 @@ export const getMyBranchSummary = async (req, res) => {
       }
     });
 
-    // إعادة حساب الإجمالي التراكمي من BranchTotal
-    await recalcBranchTotal(DEFAULT_BRANCH_NAME);
-    const cumulativeDoc = await BranchTotal.findOne({ branchName: DEFAULT_BRANCH_NAME })
+    await recalcBranchTotal(userBranchName);
+    const cumulativeDoc = await BranchTotal.findOne({ branchName: userBranchName })
       .select("cumulativeTotal lastResetAt").lean();
 
     const cumulative = cumulativeDoc?.cumulativeTotal ?? 0;
     const lastResetAt = cumulativeDoc?.lastResetAt ?? null;
 
     res.json({
-      branch: DEFAULT_BRANCH_NAME,
+      branch: userBranchName,
       reports,
       daily,
       month,
@@ -373,10 +412,14 @@ export const getMyBranchSummary = async (req, res) => {
   }
 };
 
-// ---------- GET ALL BRANCHES ----------
+// ---------- GET ALL BRANCHES (مُصلح: يجلب من قاعدة البيانات) ----------
 export const getAllBranches = async (req, res) => {
   try {
-    res.json({ branches: [DEFAULT_BRANCH_NAME] });
+    if (req.user.role !== "mainAdmin") {
+      return res.status(403).json({ message: "mainAdmin only" });
+    }
+    const branches = await Branch.find({ status: "active" }).select("name code").sort("name");
+    res.json({ branches: branches.map(b => b.name) });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
