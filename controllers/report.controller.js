@@ -50,23 +50,35 @@ const calculateTotalCash = (req, res, next) => {
 
 // ---------- Helper: Get Branch Details by ID ----------
 const getBranchDetails = async (branchId) => {
+  console.log('getBranchDetails called with:', branchId); // للتتبع
+  
   if (!branchId || !mongoose.Types.ObjectId.isValid(branchId)) {
-    throw new Error("Invalid branch ID");
+    throw new Error("Invalid branch ID format");
   }
+  
   const branch = await Branch.findById(branchId).select("name code status");
-  if (!branch || branch.status !== "active") {
-    throw new Error("Branch not found or inactive");
+  
+  if (!branch) {
+    throw new Error("Branch not found");
   }
+  
+  if (branch.status !== "active") {
+    throw new Error("Branch is not active");
+  }
+  
+  console.log('Branch found:', { name: branch.name, code: branch.code }); // للتتبع
   return { name: branch.name, code: branch.code };
 };
 
-// ---------- CREATE REPORT (مُصلح: يستخدم branchId من req.body) ----------
+// ---------- CREATE REPORT ----------
 export const submitReport = [
   upload.single("balanceImage"),
   calculateTotalCash,
   async (req, res) => {
     try {
-      const { branchId, cash, network, deliveryApps, expenses } = req.body; // قراءة branchId
+      console.log('submitReport - req.body:', req.body); // للتتبع
+      
+      const { branchId, cash, network, deliveryApps, expenses } = req.body;
       const submittedBy = req.user.id;
 
       if (!req.file) {
@@ -77,9 +89,16 @@ export const submitReport = [
         return res.status(400).json({ message: "Branch ID is required" });
       }
 
-      // جلب تفاصيل الفرع من branchId (تغيير رئيسي)
+      // التأكد من أن branchId صالح
+      if (!mongoose.Types.ObjectId.isValid(branchId)) {
+        return res.status(400).json({ message: "Invalid Branch ID format" });
+      }
+
+      // جلب تفاصيل الفرع من branchId
       const branchDetails = await getBranchDetails(branchId);
       const branchName = branchDetails.name;
+
+      console.log('Using branch name:', branchName); // للتتبع
 
       const imageUrl = req.file.path;
       const imagePublicId = req.file.filename;
@@ -89,7 +108,7 @@ export const submitReport = [
         (parseFloat(deliveryApps?.marsol) || 0);
 
       const report = new Report({
-        branchName, // استخدم الفرع المختار
+        branchName,
         cash: parseFloat(cash) || 0,
         network: parseFloat(network) || 0,
         deliveryApps: {
@@ -105,11 +124,13 @@ export const submitReport = [
         balanceImageId: imagePublicId,
         totalCashCurrent: parseFloat(cash) - parseFloat(expenses?.amount || 0),
         submittedBy,
-        branchAdmin: branchName, // أو يمكن حفظ branchId كـ ref
+        branchAdmin: branchName,
       });
 
       await report.save();
-      await recalcBranchTotal(branchName); // حساب للفرع المختار
+      console.log('Report saved with branchName:', report.branchName); // للتتبع
+      
+      await recalcBranchTotal(branchName);
 
       res.status(201).json({
         message: "Report submitted successfully",
@@ -123,7 +144,7 @@ export const submitReport = [
   },
 ];
 
-// ---------- ADMIN PASSWORD (بدون تغيير) ----------
+// ---------- ADMIN PASSWORD ----------
 export const verifyAdminPassword = async (req, res) => {
   try {
     const { password } = req.body;
@@ -137,7 +158,7 @@ export const verifyAdminPassword = async (req, res) => {
   }
 };
 
-// ---------- GET ALL REPORTS (mainAdmin: يجلب كل التقارير من كل الفروع) ----------
+// ---------- GET ALL REPORTS ----------
 export const getAllReports = async (req, res) => {
   try {
     if (req.user.role !== "mainAdmin") {
@@ -153,11 +174,15 @@ export const getAllReports = async (req, res) => {
   }
 };
 
-// ---------- GET MY BRANCH REPORTS (مُصلح: يستخدم branchName من user أو req) ----------
+// ---------- GET MY BRANCH REPORTS ----------
 export const getMyBranchReports = async (req, res) => {
   try {
-    // لـ branchAdmin/cashier: استخدم الفرع المسموح (افتراضيًا من user.allowedBranches أو branchName)
-    const userBranchName = req.user.branchName || "branche 1"; // أضف branchName إلى user في auth middleware
+    const userBranchName = req.user.branchName;
+    
+    if (!userBranchName) {
+      return res.status(400).json({ message: "User branch not found" });
+    }
+    
     const reports = await Report.find({ branchName: userBranchName })
       .populate("submittedBy", "name")
       .sort({ createdAt: -1 })
@@ -170,7 +195,7 @@ export const getMyBranchReports = async (req, res) => {
   }
 };
 
-// ---------- GET ONE REPORT (mainAdmin: بدون تغيير) ----------
+// ---------- GET ONE REPORT ----------
 export const getReportById = async (req, res) => {
   try {
     if (req.user.role !== "mainAdmin") {
@@ -184,7 +209,7 @@ export const getReportById = async (req, res) => {
   }
 };
 
-// ---------- EDIT REPORT (مُصلح: يستخدم branchName من التقرير الأصلي) ----------
+// ---------- EDIT REPORT ----------
 export const editReport = [
   upload.single("balanceImage"),
   calculateTotalCash,
@@ -193,6 +218,8 @@ export const editReport = [
       const reportId = req.params.id;
       const updates = req.body;
       const user = req.user;
+
+      console.log('editReport - updates:', updates); // للتتبع
 
       const report = await Report.findById(reportId);
       if (!report) return res.status(404).json({ message: "Report not found" });
@@ -205,6 +232,7 @@ export const editReport = [
       if (updates.branchId && user.role === "mainAdmin") {
         const branchDetails = await getBranchDetails(updates.branchId);
         report.branchName = branchDetails.name;
+        console.log('Updated branch name to:', report.branchName); // للتتبع
       }
 
       if (updates.cash) report.cash = parseFloat(updates.cash) || 0;
@@ -233,7 +261,7 @@ export const editReport = [
 
       report.totalCashCurrent = report.cash - report.expenses.amount;
       await report.save();
-      await recalcBranchTotal(report.branchName); // للفرع الحالي
+      await recalcBranchTotal(report.branchName);
 
       res.json({ message: "تم تعديل التقرير بنجاح", report });
     } catch (error) {
@@ -243,7 +271,7 @@ export const editReport = [
   },
 ];
 
-// ---------- DELETE REPORT (مُصلح: يستخدم branchName من التقرير) ----------
+// ---------- DELETE REPORT ----------
 export const deleteReport = async (req, res) => {
   try {
     const reportId = req.params.id;
@@ -257,9 +285,9 @@ export const deleteReport = async (req, res) => {
     }
 
     if (report.balanceImageId) await cloudinary.uploader.destroy(report.balanceImageId);
-    const branchName = report.branchName; // الفرع الأصلي
+    const branchName = report.branchName;
     await Report.findByIdAndDelete(reportId);
-    await recalcBranchTotal(branchName); // تحديث الفرع المحذوف منه
+    await recalcBranchTotal(branchName);
 
     res.json({ message: "تم حذف التقرير بنجاح" });
   } catch (error) {
@@ -268,10 +296,9 @@ export const deleteReport = async (req, res) => {
   }
 };
 
-// ---------- GET CUMULATIVE TOTALS (مُصلح: يجلب كل الفروع الحقيقية) ----------
+// ---------- GET CUMULATIVE TOTALS ----------
 export const getBranchTotals = async (req, res) => {
   try {
-    // جلب جميع الفروع النشطة من قاعدة البيانات (تغيير رئيسي)
     const branches = await Branch.find({ status: "active" }).select("name").lean();
     const branchNames = branches.map(b => b.name);
 
@@ -287,7 +314,7 @@ export const getBranchTotals = async (req, res) => {
           branchName: updated.branchName,
           cumulativeTotal: updated.cumulativeTotal || 0,
           lastResetAt: updated.lastResetAt || null,
-          lastReportDate: updated.lastReportDate || null, // إضافة للـ dashboard
+          lastReportDate: updated.lastReportDate || null,
         };
       })
     );
@@ -304,7 +331,7 @@ export const getBranchTotals = async (req, res) => {
   }
 };
 
-// ---------- RESET CUMULATIVE (مُصلح: يدعم فرعًا محددًا) ----------
+// ---------- RESET CUMULATIVE ----------
 export const resetCumulative = async (req, res) => {
   try {
     const allowedRoles = ['mainAdmin', 'branchAdmin'];
@@ -318,7 +345,10 @@ export const resetCumulative = async (req, res) => {
       if (!branchName) return res.status(400).json({ message: "Branch name required for mainAdmin" });
       branchToReset = branchName;
     } else {
-      branchToReset = req.user.branchName || "branche 1"; // من user
+      branchToReset = req.user.branchName;
+      if (!branchToReset) {
+        return res.status(400).json({ message: "User branch not found" });
+      }
     }
 
     await resetBranchTotal(branchToReset);
@@ -337,7 +367,7 @@ export const resetCumulative = async (req, res) => {
   }
 };
 
-// ---------- REBUILD ALL TOTALS (مُصلح: لكل الفروع) ----------
+// ---------- REBUILD ALL TOTALS ----------
 export const rebuildAllTotals = async (req, res) => {
   try {
     if (req.user.role !== "mainAdmin") return res.status(403).json({ message: "mainAdmin only" });
@@ -351,10 +381,15 @@ export const rebuildAllTotals = async (req, res) => {
   }
 };
 
-// ---------- GET MY BRANCH SUMMARY (مُصلح: لفرع المستخدم) ----------
+// ---------- GET MY BRANCH SUMMARY ----------
 export const getMyBranchSummary = async (req, res) => {
   try {
-    const userBranchName = req.user.branchName || "branche 1"; // من user
+    const userBranchName = req.user.branchName;
+    
+    if (!userBranchName) {
+      return res.status(400).json({ message: "User branch not found" });
+    }
+    
     const reports = await Report.find({ branchName: userBranchName })
       .populate("submittedBy", "name")
       .sort({ createdAt: -1 })
@@ -412,14 +447,14 @@ export const getMyBranchSummary = async (req, res) => {
   }
 };
 
-// ---------- GET ALL BRANCHES (مُصلح: يجلب من قاعدة البيانات) ----------
+// ---------- GET ALL BRANCHES ----------
 export const getAllBranches = async (req, res) => {
   try {
     if (req.user.role !== "mainAdmin") {
       return res.status(403).json({ message: "mainAdmin only" });
     }
     const branches = await Branch.find({ status: "active" }).select("name code").sort("name");
-    res.json({ branches: branches.map(b => b.name) });
+    res.json({ branches: branches.map(b => ({ _id: b._id, name: b.name, code: b.code })) });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
